@@ -357,6 +357,7 @@ func ListenPipe(path string, c *PipeConfig) (net.Listener, error) {
 		path:               path,
 		securityDescriptor: sd,
 		config:             *c,
+		first:              true,
 		acceptCh:           make(chan (chan acceptResponse)),
 		closeCh:            make(chan int),
 		doneCh:             make(chan int),
