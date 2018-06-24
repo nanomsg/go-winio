@@ -256,10 +256,12 @@ func (l *win32PipeListener) makeServerPipe() (*win32File, error) {
 }
 
 func (l *win32PipeListener) makeConnectedServerPipe() (*win32File, error) {
-	p, err := l.makeServerPipe()
+	newPipe, err := l.makeServerPipe()
 	if err != nil {
 		return nil, err
 	}
+	p := l.firstHandle
+	l.firstHandle = newPipe
 
 	// Wait for the client to connect.
 	ch := make(chan error)
@@ -286,32 +288,30 @@ func (l *win32PipeListener) makeConnectedServerPipe() (*win32File, error) {
 }
 
 func (l *win32PipeListener) listenerRoutine() {
-	closed := false
-	for !closed {
+	for {
 		select {
 		case <-l.closeCh:
-			closed = true
+			syscall.Close(l.firstHandle)
+			l.firstHandle = 0
+			// Notify Close() and Accept() callers that the handle has been closed.
+			close(l.doneCh)
+			return
+
 		case responseCh := <-l.acceptCh:
-			var (
-				p   *win32File
-				err error
-			)
-			for {
-				p, err = l.makeConnectedServerPipe()
-				// If the connection was immediately closed by the client, try
-				// again.
-				if err != cERROR_NO_DATA {
-					break
-				}
-			}
-			responseCh <- acceptResponse{p, err}
-			closed = err == ErrPipeListenerClosed
 		}
+		var (
+			p   *win32File
+			err error
+		)
+		for {
+			p, err = l.makeConnectedServerPipe()
+			// If it was immediately closed by the client, try again.
+			if err != cERROR_NO_DATA {
+				break
+			}
+		}
+		responseCh <- acceptResponse{p, err}
 	}
-	syscall.Close(l.firstHandle)
-	l.firstHandle = 0
-	// Notify Close() and Accept() callers that the handle has been closed.
-	close(l.doneCh)
 }
 
 // PipeConfig contain configuration for the pipe listener.
@@ -354,14 +354,6 @@ func ListenPipe(path string, c *PipeConfig) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Immediately open and then close a client handle so that the named pipe is
-	// created but not currently accepting connections.
-	h2, err := createFile(path, 0, 0, nil, syscall.OPEN_EXISTING, cSECURITY_SQOS_PRESENT|cSECURITY_ANONYMOUS, 0)
-	if err != nil {
-		syscall.Close(h)
-		return nil, err
-	}
-	syscall.Close(h2)
 	l := &win32PipeListener{
 		firstHandle:        h,
 		path:               path,
@@ -384,10 +376,10 @@ func connectPipe(p *win32File) error {
 
 	err = connectNamedPipe(p.handle, &c.o)
 	_, err = p.asyncIo(c, nil, 0, err)
-	if err != nil && err != cERROR_PIPE_CONNECTED {
-		return err
+	if err == cERROR_PIPE_CONNECTED { // this is not an error condition
+		err = nil
 	}
-	return nil
+	return err
 }
 
 func (l *win32PipeListener) Accept() (net.Conn, error) {
@@ -395,9 +387,8 @@ func (l *win32PipeListener) Accept() (net.Conn, error) {
 	select {
 	case l.acceptCh <- ch:
 		response := <-ch
-		err := response.err
-		if err != nil {
-			return nil, err
+		if response.err != nil {
+			return nil, response.err
 		}
 		if l.config.MessageMode {
 			return &win32MessageBytePipe{
