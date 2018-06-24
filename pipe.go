@@ -207,7 +207,7 @@ type acceptResponse struct {
 }
 
 type win32PipeListener struct {
-	firstPipe          *win32Pipe
+	firstPipe          *win32File
 	first              bool
 	path               string
 	securityDescriptor []byte
@@ -301,19 +301,19 @@ func (l *win32PipeListener) listenerRoutine() {
 			return
 
 		case responseCh := <-l.acceptCh:
-		}
-		var (
-			p   *win32File
-			err error
-		)
-		for {
-			p, err = l.makeConnectedServerPipe()
-			// If it was immediately closed by the client, try again.
-			if err != cERROR_NO_DATA {
-				break
+			var (
+				p   *win32File
+				err error
+			)
+			for {
+				p, err = l.makeConnectedServerPipe()
+				// If it was immediately closed by the client, try again.
+				if err != cERROR_NO_DATA {
+					break
+				}
 			}
+			responseCh <- acceptResponse{p, err}
 		}
-		responseCh <- acceptResponse{p, err}
 	}
 }
 
