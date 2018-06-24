@@ -207,7 +207,8 @@ type acceptResponse struct {
 }
 
 type win32PipeListener struct {
-	firstHandle        syscall.Handle
+	firstPipe          *win32Pipe
+	first              bool
 	path               string
 	securityDescriptor []byte
 	config             PipeConfig
@@ -243,7 +244,8 @@ func makeServerPipeHandle(path string, securityDescriptor []byte, c *PipeConfig,
 }
 
 func (l *win32PipeListener) makeServerPipe() (*win32File, error) {
-	h, err := makeServerPipeHandle(l.path, l.securityDescriptor, &l.config, false)
+	first := l.first
+	h, err := makeServerPipeHandle(l.path, l.securityDescriptor, &l.config, first)
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +254,7 @@ func (l *win32PipeListener) makeServerPipe() (*win32File, error) {
 		syscall.Close(h)
 		return nil, err
 	}
+	l.first = false
 	return f, nil
 }
 
@@ -260,8 +263,8 @@ func (l *win32PipeListener) makeConnectedServerPipe() (*win32File, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := l.firstHandle
-	l.firstHandle = newPipe
+	p := l.firstPipe
+	l.firstPipe = newPipe
 
 	// Wait for the client to connect.
 	ch := make(chan error)
@@ -291,8 +294,8 @@ func (l *win32PipeListener) listenerRoutine() {
 	for {
 		select {
 		case <-l.closeCh:
-			syscall.Close(l.firstHandle)
-			l.firstHandle = 0
+			l.firstPipe.Close()
+			l.firstPipe = nil
 			// Notify Close() and Accept() callers that the handle has been closed.
 			close(l.doneCh)
 			return
@@ -350,12 +353,7 @@ func ListenPipe(path string, c *PipeConfig) (net.Listener, error) {
 			return nil, err
 		}
 	}
-	h, err := makeServerPipeHandle(path, sd, c, true)
-	if err != nil {
-		return nil, err
-	}
 	l := &win32PipeListener{
-		firstHandle:        h,
 		path:               path,
 		securityDescriptor: sd,
 		config:             *c,
@@ -363,6 +361,11 @@ func ListenPipe(path string, c *PipeConfig) (net.Listener, error) {
 		closeCh:            make(chan int),
 		doneCh:             make(chan int),
 	}
+	p, err := l.makeServerPipe()
+	if err != nil {
+		return nil, err
+	}
+	l.firstPipe = p
 	go l.listenerRoutine()
 	return l, nil
 }
